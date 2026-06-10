@@ -75,8 +75,9 @@ def get_logger(log_file: Optional[str] = None,
     handlers = [stream_handler]
 
     # Always add file handler since log_file is set to default if None
-    file_handler = logging.FileHandler(log_file, file_mode)
-    handlers.append(file_handler)
+    if os.getenv('MS_AGENT_NO_FILE_LOG') != '1':
+        file_handler = logging.FileHandler(log_file, file_mode)
+        handlers.append(file_handler)
 
     for handler in handlers:
         handler.setFormatter(logger_format)
@@ -124,10 +125,11 @@ def add_file_handler_if_needed(logger, log_file, file_mode, log_level):
         # Default log file path if not specified
         if log_file is None:
             log_file = os.path.join(os.getcwd(), 'ms_agent.log')
-        file_handler = logging.FileHandler(log_file, file_mode)
-        file_handler.setFormatter(logger_format)
-        file_handler.setLevel(log_level)
-        logger.addHandler(file_handler)
+        if os.getenv('MS_AGENT_NO_FILE_LOG') != '1':
+            file_handler = logging.FileHandler(log_file, file_mode)
+            file_handler.setFormatter(logger_format)
+            file_handler.setLevel(log_level)
+            logger.addHandler(file_handler)
 
 
 def refresh_log_level(target_logger=None):
