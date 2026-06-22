@@ -120,17 +120,22 @@ class Anthropic(LLM):
             'model': self.model,
             'messages': formatted_messages,
             'max_tokens': max_tokens,
-            'thinking': {
-                'type': 'enabled' if enable_thinking else 'disabled',
-                'budget_tokens': thinking_budget
-            }
         }
+        if enable_thinking:
+            params['thinking'] = {
+                'type': 'enabled',
+                'budget_tokens': thinking_budget,
+            }
 
         if system:
             params['system'] = system
         if tools:
             params['tools'] = tools
         params.update(kwargs)
+        params.pop('extra_body', None)
+        thinking = params.get('thinking')
+        if isinstance(thinking, dict) and thinking.get('type') != 'enabled':
+            params.pop('thinking', None)
 
         if stream:
             return self.client.messages.stream(**params)

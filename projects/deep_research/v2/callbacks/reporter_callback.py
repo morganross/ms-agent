@@ -123,12 +123,17 @@ class ReporterCallback(Callback):
             'no_report':
             ('External inspection found that the completed report file reports/report.md '
              'has not been detected in the output directory.\n'
-             'Please confirm whether the report writing workflow has been completed. '
-             'You should have completed at least the following steps:\n'
-             '1. Finished writing all chapters\n'
-             '2. Called report_generator---assemble_draft to generate the report draft\n'
-             '3. Reviewed the draft and delivered the final version\n'
-             'Please take immediate action to complete report delivery.'),
+             'Do not merely explain the problem. Your next assistant message must call one or more '
+             'report_generator tools.\n'
+             'Resume the existing workflow instead of restarting it when artifacts already exist: '
+             'if the outline is missing, call report_generator---commit_outline; if chapters are '
+             'missing, call report_generator---get_status and then prepare/commit only the missing '
+             'chapters; if all chapters are present but reports/draft.md is missing, call '
+             'report_generator---assemble_draft; if reports/draft.md exists, call '
+             'report_generator---finalize_report with no final_content unless a concrete quality '
+             'problem requires a complete replacement.\n'
+             'The final report body must contain real content, not placeholders or references to '
+             'other local files.'),
             'over_compressed':
             ('External inspection found that reports/{report_name} ({report_chars} chars) '
              'is only {ratio:.0%} of reports/draft.md ({draft_chars} chars), '
@@ -589,13 +594,18 @@ class ReporterCallback(Callback):
             return
         if not runtime.should_stop:
             return
+        has_report = os.path.isfile(self.report_path)
+        has_draft = os.path.isfile(self.draft_path)
+
         if self._reflection_retries_used >= self.reflection_max_retries:
+            if not has_report:
+                raise RuntimeError(
+                    'Reporter attempted to stop without reports/report.md '
+                    f'after {self.reflection_max_retries} reflection retries.'
+                )
             logger.info('ReporterCallback: reflection retry cap reached '
                         f'({self.reflection_max_retries}), allowing stop.')
             return
-
-        has_report = os.path.isfile(self.report_path)
-        has_draft = os.path.isfile(self.draft_path)
 
         # --- Check 1: report file existence ---
         if not has_report:

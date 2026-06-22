@@ -69,6 +69,14 @@ def _message_from_data(data: Any) -> Message:
     return Message(role='assistant', content=str(data))
 
 
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ''
+    return str(content)
+
+
 def _build_sub_agent(spec: _AgentToolSpec, default_trust_remote_code: bool):
     if spec.inline_config is not None:
         config_override = OmegaConf.create(spec.inline_config)
@@ -802,10 +810,19 @@ class AgentTool(ToolBase):
         # Default: return final assistant message text
         for msg in reversed(messages):
             if getattr(msg, 'role', '') == 'assistant':
-                return self._truncate(msg.content or '', spec.max_output_chars)
+                text = _message_text(getattr(msg, 'content', ''))
+                if text.strip():
+                    return self._truncate(text, spec.max_output_chars)
+                raise RuntimeError(
+                    f'Agent tool "{spec.tool_name}" finished without a final assistant message.'
+                )
 
-        return self._truncate(messages[-1].content or '',
-                              spec.max_output_chars)
+        text = _message_text(getattr(messages[-1], 'content', ''))
+        if text.strip():
+            return self._truncate(text, spec.max_output_chars)
+        raise RuntimeError(
+            f'Agent tool "{spec.tool_name}" finished without any terminal output.'
+        )
 
     def _serialize_message(self, message: Message) -> Dict[str, Any]:
         data = message.to_dict()

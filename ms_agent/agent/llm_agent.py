@@ -32,6 +32,21 @@ from .base import Agent
 logger = get_logger()
 
 
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ''
+    return str(content)
+
+
+def _is_tool_failure_text(text: str) -> bool:
+    normalized = str(text or '')
+    return normalized.startswith('Tool calling failed:'
+                                 ) or normalized.startswith(
+                                     'Execute tool call timeout:')
+
+
 class LLMAgent(Agent):
     """
     An agent designed to run LLM-based tasks with support for tools, memory,
@@ -491,6 +506,12 @@ class LLMAgent(Agent):
 
     async def after_tool_call(self, messages: List[Message]):
         if messages[-1].role == 'assistant' and not messages[-1].tool_calls:
+            text = _message_text(messages[-1].content).strip()
+            reasoning = str(messages[-1].reasoning_content or '').strip()
+            if not text and not reasoning:
+                raise RuntimeError(
+                    f'Agent {self.tag} produced an empty assistant response without tool calls.'
+                )
             self.runtime.should_stop = True
         await self.loop_callback('after_tool_call', messages)
 
@@ -522,6 +543,15 @@ class LLMAgent(Agent):
         for tool_call_result, tool_call_query in zip(tool_call_result,
                                                      messages[-1].tool_calls):
             tool_call_result_format = ToolResult.from_raw(tool_call_result)
+            tool_name = str(tool_call_query.get('tool_name') or '')
+            tool_text = str(tool_call_result_format.text or '')
+            if tool_name.startswith('agent_tools---'):
+                if _is_tool_failure_text(tool_text):
+                    raise RuntimeError(
+                        f'Sub-agent tool {tool_name} failed: {tool_text}')
+                if not tool_text.strip():
+                    raise RuntimeError(
+                        f'Sub-agent tool {tool_name} returned empty output.')
             _new_message = Message(
                 role='tool',
                 content=tool_call_result_format.text,
@@ -902,6 +932,29 @@ class LLMAgent(Agent):
                     sys.stdout.flush()
                     _content = _response_message.content
                     messages[-1] = _response_message
+                    yield messages
+                if _response_message is None:
+                    logger.warning(
+                        f'[{self.tag}] streaming response produced no chunks; retrying once without stream.'
+                    )
+                    _response_message = self.llm.generate(
+                        messages,
+                        tools=tools,
+                        stream=False,
+                    )
+                    if self.show_reasoning:
+                        reasoning_text = (
+                            getattr(_response_message, 'reasoning_content', '')
+                            or '')
+                        if reasoning_text:
+                            if not _printed_reasoning_header:
+                                self._write_reasoning('[thinking]:\n')
+                                _printed_reasoning_header = True
+                            self._write_reasoning(reasoning_text)
+                    if _response_message.content:
+                        sys.stdout.write(_response_message.content)
+                        sys.stdout.flush()
+                    messages.append(_response_message)
                     yield messages
                 if self.show_reasoning and _printed_reasoning_header:
                     self._write_reasoning('\n')

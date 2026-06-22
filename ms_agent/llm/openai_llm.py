@@ -14,6 +14,15 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 logger = get_logger()
 
+_SUPPORTED_FINISH_REASONS = {'stop', 'tool_calls', 'length', 'null', None}
+
+
+def _ensure_supported_finish_reason(finish_reason: Optional[str]) -> Optional[str]:
+    if finish_reason in _SUPPORTED_FINISH_REASONS:
+        return finish_reason
+    raise RuntimeError(
+        f'LLM returned unsupported finish_reason: {finish_reason}')
+
 
 class OpenAI(LLM):
     """Base Class for OpenAI SDK LLMs.
@@ -331,6 +340,8 @@ class OpenAI(LLM):
             # chunk[-2]: chunk with finish_reason and last contents
             # chunk[-1]: chunk with usage only
             if chunk.choices and chunk.choices[0].finish_reason:
+                finish_reason = _ensure_supported_finish_reason(
+                    chunk.choices[0].finish_reason)
                 try:
                     next_chunk = next(completion)
                     message.prompt_tokens += next_chunk.usage.prompt_tokens
@@ -343,11 +354,10 @@ class OpenAI(LLM):
                     # The stream may end without a final usage chunk, which is acceptable.
                     pass
                 first_run = not messages[-1].to_dict().get('partial', False)
-                if chunk.choices[0].finish_reason in [
-                        'length', 'null'
-                ] and (max_runs is None or max_runs != 0):
+                if finish_reason in ['length', 'null'
+                                     ] and (max_runs is None or max_runs != 0):
                     logger.info(
-                        f'finish_reason: {chunk.choices[0].finish_reason}, continue generate.'
+                        f'finish_reason: {finish_reason}, continue generate.'
                     )
                     completion = self._call_llm_for_continue_gen(
                         messages, message, tools, **kwargs)
@@ -522,11 +532,12 @@ class OpenAI(LLM):
             Message: A fully formed Message object containing the complete response.
         """
         new_message = self._format_output_message(completion)
-        if completion.choices[0].finish_reason in [
-                'length', 'null'
-        ] and (max_runs is None or max_runs != 0):
+        finish_reason = _ensure_supported_finish_reason(
+            completion.choices[0].finish_reason)
+        if finish_reason in ['length', 'null'
+                             ] and (max_runs is None or max_runs != 0):
             logger.info(
-                f'finish_reason: {completion.choices[0].finish_reason}， continue generate.'
+                f'finish_reason: {finish_reason}， continue generate.'
             )
             completion = self._call_llm_for_continue_gen(
                 messages, new_message, tools, **kwargs)

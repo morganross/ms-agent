@@ -152,12 +152,18 @@ class ResearcherCallback(Callback):
             return
         if not runtime.should_stop:
             return
+
+        # --- Check 1: report file existence ---
         if self._retries_used >= self.max_retries:
+            if not os.path.isfile(self._report_path):
+                raise RuntimeError(
+                    f'Researcher attempted to stop without {self.report_filename} '
+                    f'after {self.max_retries} reflection retries.'
+                )
             logger.info('ResearcherCallback: reflection retry cap reached '
                         f'({self.max_retries}), allowing stop.')
             return
 
-        # --- Check 1: report file existence ---
         if not os.path.isfile(self._report_path):
             logger.warning(
                 f'ResearcherCallback: {self.report_filename} not found, '
