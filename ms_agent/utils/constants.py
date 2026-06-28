@@ -82,6 +82,14 @@ class DeepseekConfig(ServiceConfig):
 
 
 @dataclass
+class GeminiConfig(ServiceConfig):
+
+    def __init__(self):
+        super().__init__(
+            base_url='https://generativelanguage.googleapis.com/v1beta/openai/')
+
+
+@dataclass
 class AnthropicConfig(ServiceConfig):
 
     def __init__(self):
@@ -99,6 +107,7 @@ SERVICE_MAPPING: Dict[str, ServiceConfig] = {
     'modelscope': ModelscopeConfig(),
     'dashscope': DashscopeConfig(),
     'deepseek': DeepseekConfig(),
+    'gemini': GeminiConfig(),
     'anthropic': AnthropicConfig(),
     'openai': OpenaiConfig(),
 }

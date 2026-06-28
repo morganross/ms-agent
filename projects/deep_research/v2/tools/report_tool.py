@@ -43,6 +43,172 @@ def _write_text(path: str, content: str) -> None:
         f.write(content)
 
 
+def _normalize_report_content(content: str) -> str:
+    text = str(content or '').strip()
+    if not text:
+        return ''
+
+    if '\\n' in text:
+        text = text.replace('\\n', '\n')
+    if "\\'" in text:
+        text = text.replace("\\'", "'")
+    text = _demote_extra_top_level_headings(text)
+
+    lines = text.splitlines()
+    if lines and lines[0].startswith('# '):
+        lines[0] = lines[0].replace(' (Draft)', '').replace('(Draft)', '').rstrip()
+        text = '\n'.join(lines)
+    return text.rstrip() + '\n'
+
+
+def _demote_heading_line(line: str) -> str:
+    match = re.match(r'^(#{1,5})(\s+.+)$', line)
+    if not match:
+        return line
+    return f"{match.group(1)}#{match.group(2)}"
+
+
+def _demote_all_headings(text: str) -> str:
+    return '\n'.join(_demote_heading_line(line) for line in text.splitlines())
+
+
+def _demote_extra_top_level_headings(text: str) -> str:
+    lines = text.splitlines()
+    seen_title = False
+    has_extra_h1 = False
+    for line in lines:
+        if not line.startswith('# '):
+            continue
+        if not seen_title:
+            seen_title = True
+        else:
+            has_extra_h1 = True
+            break
+    if not has_extra_h1:
+        return text
+
+    normalized_lines: List[str] = []
+    seen_title = False
+    for line in lines:
+        if line.startswith('# ') and not seen_title:
+            seen_title = True
+            normalized_lines.append(line)
+        elif seen_title:
+            normalized_lines.append(_demote_heading_line(line))
+        else:
+            normalized_lines.append(line)
+    return '\n'.join(normalized_lines)
+
+
+def _heading_title(line: str) -> Optional[str]:
+    match = re.match(r'^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$', line)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _canonical_heading_text(text: str) -> str:
+    normalized = re.sub(r'\s+', ' ', str(text or '').strip().lower())
+    normalized = re.sub(r'^chapter\s+\d+\s*[:.\-]?\s*', '', normalized)
+    normalized = re.sub(r'^\d+(?:\.\d+)*\s*[.)]?\s*', '', normalized)
+    return normalized
+
+
+def _ensure_chapter_heading(content: str, chapter_title: str) -> str:
+    text = str(content or '').strip()
+    title = str(chapter_title or '').strip()
+    if not text or not title:
+        return text.rstrip() + '\n' if text else ''
+
+    lines = text.splitlines()
+    first_content_index: Optional[int] = None
+    for index, line in enumerate(lines):
+        if line.strip():
+            first_content_index = index
+            break
+    if first_content_index is None:
+        return f'## {title}\n'
+
+    first_heading = _heading_title(lines[first_content_index])
+    if first_heading is not None:
+        if _canonical_heading_text(first_heading) == _canonical_heading_text(title):
+            lines[first_content_index] = f'## {title}'
+            return '\n'.join(lines).rstrip() + '\n'
+
+    lines.insert(first_content_index, f'## {title}')
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def _chapter_toc_label(chapter_id: Any, title: str) -> str:
+    title_text = str(title or '').strip()
+    if re.match(rf'^{re.escape(str(chapter_id))}\s*[.)]\s+', title_text):
+        return title_text
+    return f'Chapter {chapter_id}: {title_text}'
+
+
+def _normalize_chapter_content(content: str) -> str:
+    text = str(content or '').strip()
+    if not text:
+        return ''
+    if '\\n' in text:
+        text = text.replace('\\n', '\n')
+    if "\\'" in text:
+        text = text.replace("\\'", "'")
+    if any(line.startswith('# ') for line in text.splitlines()):
+        text = _demote_all_headings(text)
+    return text.rstrip() + '\n'
+
+
+_LOCAL_REFERENCE_PATTERNS = [
+    re.compile(r'(?<![A-Za-z0-9_:/.-])(?:evidence|reports)/[^\s\])>]+',
+               re.IGNORECASE),
+    re.compile(r'(?<![A-Za-z0-9_:/.-])(?:final_report|draft|report)\.md\b',
+               re.IGNORECASE),
+    re.compile(r'\b(?:analysis|conclusion|note)_[0-9a-f]{6,}\.md\b',
+               re.IGNORECASE),
+    re.compile(r'\[[0-9a-f]{6,}\]', re.IGNORECASE),
+    re.compile(r'\b(?:Note ID|Analysis ID|note_id|analysis_id)\b',
+               re.IGNORECASE),
+]
+
+
+def _invalid_local_report_references(text: str) -> List[str]:
+    """Return local evidence/analysis references that must not enter reports."""
+    invalid: List[str] = []
+    for pattern in _LOCAL_REFERENCE_PATTERNS:
+        for match in pattern.finditer(text or ''):
+            invalid.append(match.group(0))
+    return list(dict.fromkeys(invalid))
+
+
+def _validate_note_ids(_field_name: str, note_ids: List[str],
+                       valid_note_ids: set[str]) -> List[str]:
+    invalid = []
+    for note_id in note_ids or []:
+        if not isinstance(note_id, str) or note_id.strip() not in valid_note_ids:
+            invalid.append(str(note_id))
+    return invalid
+
+
+def _invalid_cited_urls(cited_urls: Optional[List[str]]) -> List[str]:
+    invalid = []
+    for url in cited_urls or []:
+        value = str(url or '').strip()
+        if (not value or not re.match(r'^https?://', value, re.IGNORECASE)
+                or _invalid_local_report_references(value)):
+            invalid.append(value)
+    return invalid
+
+
+def _format_validation_error(message: str,
+                             invalid_items: List[str]) -> Dict[str, Any]:
+    return {
+        'status': 'error',
+        'message': message,
+        'invalid_items': invalid_items[:20],
+    }
+
+
 def _render_outline_md(outline: Dict[str, Any]) -> str:
     """Render outline as Markdown."""
     lines = [f"# {outline.get('title', 'Report Outline')}", '']
@@ -170,6 +336,8 @@ class ReportTool(ToolBase):
             os.path.join(self.output_dir, self._reports_dir, 'draft.md'),
             'report_md':
             os.path.join(self.output_dir, self._reports_dir, 'report.md'),
+            'final_report_md':
+            os.path.join(self.output_dir, 'final_report.md'),
             'evidence_index':
             os.path.join(self.output_dir, self._evidence_dir, 'index.json'),
             'evidence_notes_dir':
@@ -195,6 +363,14 @@ class ReportTool(ToolBase):
                             'title': {
                                 'type': 'string',
                                 'description': 'Title of the report.',
+                            },
+                            'summary': {
+                                'type':
+                                'string',
+                                'description':
+                                ('Short report summary to place immediately after the title '
+                                 'and before the table of contents. State what failed, '
+                                 'why it matters, and what the report will prove.'),
                             },
                             'chapters': {
                                 'type': 'array',
@@ -249,7 +425,7 @@ class ReportTool(ToolBase):
                                 },
                             },
                         },
-                        'required': ['title', 'chapters'],
+                        'required': ['title', 'summary', 'chapters'],
                         'additionalProperties': False,
                     },
                 ),
@@ -467,7 +643,7 @@ class ReportTool(ToolBase):
                     description=
                     ('Assemble all chapters into a draft (draft.md) with TOC and references. '
                      'Returns the draft path along with a summary of recorded conflicts. '
-                     'The model should then review the draft and conflicts to produce the final report.'
+                     'The model should then review the draft and conflicts and call finalize_report.'
                      ),
                     parameters={
                         'type': 'object',
@@ -483,6 +659,29 @@ class ReportTool(ToolBase):
                                 'description':
                                 'Whether to include references section.',
                                 'default': True,
+                            },
+                        },
+                        'required': [],
+                        'additionalProperties': False,
+                    },
+                ),
+                Tool(
+                    tool_name='finalize_report',
+                    server_name=self.SERVER_NAME,
+                    description=
+                    ('Create the final report artifact after chapters are complete. '
+                     'If final_content is omitted, this promotes the assembled draft after '
+                     'removing draft markers and normalizing escaped newlines. '
+                     'Writes both reports/report.md and final_report.md.'),
+                    parameters={
+                        'type': 'object',
+                        'properties': {
+                            'final_content': {
+                                'type':
+                                'string',
+                                'description':
+                                ('Optional complete final report markdown. '
+                                 'When omitted, the current assembled draft is used.'),
                             },
                         },
                         'required': [],
@@ -568,6 +767,7 @@ class ReportTool(ToolBase):
     async def commit_outline(
         self,
         title: str,
+        summary: str,
         chapters: List[Dict[str, Any]],
     ) -> str:
         """Generate report outline with chapter structure."""
@@ -578,6 +778,18 @@ class ReportTool(ToolBase):
         # Load evidence index to validate coverage
         evidence_index = self._load_evidence_index(paths)
         all_note_ids = set(evidence_index.get('notes', {}).keys())
+        invalid_candidates: List[str] = []
+        for ch in chapters:
+            invalid_candidates.extend(
+                _validate_note_ids('candidate_evidence',
+                                   ch.get('candidate_evidence', []),
+                                   all_note_ids))
+        if invalid_candidates:
+            return _json_dumps(
+                _format_validation_error(
+                    'Outline candidate_evidence must contain existing evidence note_ids only. '
+                    'Do not use analysis IDs, local file paths, or missing notes.',
+                    list(dict.fromkeys(invalid_candidates))))
 
         # Build outline
         outline_chapters = []
@@ -612,6 +824,7 @@ class ReportTool(ToolBase):
 
         outline = {
             'title': title,
+            'summary': str(summary or '').strip(),
             'created_at': _now_iso(),
             'updated_at': _now_iso(),
             'chapters': outline_chapters,
@@ -670,6 +883,20 @@ class ReportTool(ToolBase):
         # Load evidence content
         evidence_index = self._load_evidence_index(paths)
         notes_meta = evidence_index.get('notes', {})
+        all_note_ids = set(notes_meta.keys())
+        requested_note_ids = list(
+            dict.fromkeys(
+                list(chapter.get('candidate_evidence', []))
+                + list(relevant_evidence or [])))
+        invalid_requested = _validate_note_ids('relevant_evidence',
+                                               requested_note_ids,
+                                               all_note_ids)
+        if invalid_requested:
+            return _json_dumps(
+                _format_validation_error(
+                    'Chapter evidence must contain existing evidence note_ids only. '
+                    'Do not use analysis IDs, local file paths, or missing notes.',
+                    list(dict.fromkeys(invalid_requested))))
 
         notes_content = []
         seen_note_ids = set()
@@ -697,17 +924,16 @@ class ReportTool(ToolBase):
                     meta.get('tags', note_data.get('tags', [])),
                 })
             else:
-                # Note not found, include minimal info
-                notes_content.append({
-                    'note_id': note_id,
-                    'error': f'Note {note_id} not found',
-                    'title': meta.get('title', ''),
-                    'summary': meta.get('summary', ''),
+                return _json_dumps({
+                    'status':
+                    'error',
+                    'message':
+                    f'Evidence note {note_id} is indexed but its note file is missing.',
                 })
 
             seen_note_ids.add(note_id)
 
-        for note_id in relevant_evidence:
+        for note_id in relevant_evidence or []:
             if note_id not in seen_note_ids:
                 meta = notes_meta.get(note_id, {})
                 note_data = self._load_note_content(paths, note_id)
@@ -733,24 +959,20 @@ class ReportTool(ToolBase):
                         meta.get('tags', note_data.get('tags', [])),
                     })
                 else:
-                    notes_content.append({
-                        'note_id': note_id,
-                        'error': f'Note {note_id} not found',
-                        'title': meta.get('title', ''),
-                        'summary': meta.get('summary', ''),
+                    return _json_dumps({
+                        'status':
+                        'error',
+                        'message':
+                        f'Evidence note {note_id} is indexed but its note file is missing.',
                     })
 
         # Build meta
-        candidate_evidence = list(
-            dict.fromkeys(
-                list(chapter.get('candidate_evidence', []))
-                + list(relevant_evidence or [])))
         meta = {
             'chapter_id': chapter_id,
             'chapter_title': chapter['title'],
             'chapter_goals': chapter.get('goals', []),
             'sections_description': chapter.get('sections_description', ''),
-            'candidate_evidence': candidate_evidence,
+            'candidate_evidence': requested_note_ids,
             'need_raw_chunks': need_raw_chunks,
             'loaded_chunks': [],
             'created_at': _now_iso(),
@@ -803,16 +1025,15 @@ class ReportTool(ToolBase):
                 'message': 'Outline not created yet.'
             })
 
-        # Find and update chapter
+        # Find chapter before mutating report state.
         chapter_found = False
         chapter_title = ''
+        target_chapter: Optional[Dict[str, Any]] = None
         for ch in outline.get('chapters', []):
             if ch['chapter_id'] == chapter_id:
-                ch['status'] = 'completed'
-                if cited_urls:
-                    ch['cited_urls'] = cited_urls
                 chapter_found = True
                 chapter_title = ch['title']
+                target_chapter = ch
                 break
 
         if not chapter_found:
@@ -821,12 +1042,49 @@ class ReportTool(ToolBase):
                 'message': f'Chapter {chapter_id} not found.'
             })
 
+        evidence_index = self._load_evidence_index(paths)
+        all_note_ids = set(evidence_index.get('notes', {}).keys())
+        invalid_evidence = _validate_note_ids('reranked_evidence',
+                                              reranked_evidence or [],
+                                              all_note_ids)
+        if invalid_evidence:
+            return _json_dumps(
+                _format_validation_error(
+                    'reranked_evidence must contain existing evidence note_ids only. '
+                    'Do not use analysis IDs, local file paths, or missing notes.',
+                    list(dict.fromkeys(invalid_evidence))))
+
+        invalid_urls = _invalid_cited_urls(cited_urls)
+        if invalid_urls:
+            return _json_dumps(
+                _format_validation_error(
+                    'cited_urls must be public http(s) source URLs. '
+                    'Do not cite local evidence files, analysis files, or note IDs.',
+                    invalid_urls))
+
+        content = _ensure_chapter_heading(
+            _normalize_chapter_content(content),
+            chapter_title,
+        )
+        invalid_content_refs = _invalid_local_report_references(content)
+        if invalid_content_refs:
+            return _json_dumps(
+                _format_validation_error(
+                    'Chapter content contains local evidence, analysis, or note placeholders. '
+                    'Use only numbered citations that point to public source URLs.',
+                    invalid_content_refs))
+
         # Write chapter file
         chapter_path = os.path.join(paths['chapters_dir'],
                                     f'chapter_{chapter_id:02d}.md')
 
         with file_lock(paths['lock_dir'], f'chapter_{chapter_id}'):
             _write_text(chapter_path, content)
+
+        if target_chapter is not None:
+            target_chapter['status'] = 'completed'
+            target_chapter['reranked_evidence'] = list(reranked_evidence or [])
+            target_chapter['cited_urls'] = list(cited_urls or [])
 
         with file_lock(paths['lock_dir'], 'report_outline'):
             self._save_outline(paths, outline)
@@ -924,6 +1182,20 @@ class ReportTool(ToolBase):
             chapter_found = False
             for ch in outline.get('chapters', []):
                 if ch['chapter_id'] == chapter_id:
+                    if 'candidate_evidence' in updates:
+                        evidence_index = self._load_evidence_index(paths)
+                        all_note_ids = set(
+                            evidence_index.get('notes', {}).keys())
+                        invalid_evidence = _validate_note_ids(
+                            'candidate_evidence',
+                            updates.get('candidate_evidence') or [],
+                            all_note_ids)
+                        if invalid_evidence:
+                            return _json_dumps(
+                                _format_validation_error(
+                                    'candidate_evidence must contain existing evidence note_ids only. '
+                                    'Do not use analysis IDs, local file paths, or missing notes.',
+                                    list(dict.fromkeys(invalid_evidence))))
                     if 'title' in updates:
                         ch['title'] = updates['title']
                     if 'goals' in updates:
@@ -971,19 +1243,36 @@ class ReportTool(ToolBase):
         # Collect chapter contents
         chapters_content = []
         missing_chapters = []
+        invalid_chapters: List[Dict[str, Any]] = []
 
         for ch in outline.get('chapters', []):
             chapter_path = os.path.join(paths['chapters_dir'],
                                         f"chapter_{ch['chapter_id']:02d}.md")
             if os.path.exists(chapter_path):
                 with open(chapter_path, 'r', encoding='utf-8') as f:
+                    content = _ensure_chapter_heading(
+                        _normalize_chapter_content(f.read()),
+                        ch['title'],
+                    )
+                    invalid_refs = _invalid_local_report_references(content)
+                    invalid_urls = _invalid_cited_urls(
+                        ch.get('cited_urls', []))
+                    if invalid_refs or invalid_urls:
+                        invalid_chapters.append({
+                            'chapter_id':
+                            ch['chapter_id'],
+                            'invalid_references':
+                            invalid_refs[:20],
+                            'invalid_cited_urls':
+                            invalid_urls[:20],
+                        })
                     chapters_content.append({
                         'id':
                         ch['chapter_id'],
                         'title':
                         ch['title'],
                         'content':
-                        f.read(),
+                        content,
                         'reranked_evidence':
                         ch.get('reranked_evidence', []),
                         'cited_urls':
@@ -1000,10 +1289,24 @@ class ReportTool(ToolBase):
                 f'The following chapters are not completed yet: {missing_chapters}',
             })
 
+        if invalid_chapters:
+            return _json_dumps({
+                'status':
+                'error',
+                'message':
+                'Cannot assemble draft because one or more chapters contain local evidence, analysis, or note placeholders.',
+                'invalid_chapters':
+                invalid_chapters,
+            })
+
         # Build draft
         draft_lines = [
             f"# {outline.get('title', 'Research Report')} (Draft)", ''
         ]
+        summary_text = str(outline.get('summary') or '').strip()
+        if summary_text:
+            draft_lines.append(summary_text)
+            draft_lines.append('')
 
         # Table of contents
         if include_toc:
@@ -1012,7 +1315,7 @@ class ReportTool(ToolBase):
             for ch in chapters_content:
                 anchor = ch['title'].replace(' ', '-').lower()
                 draft_lines.append(
-                    f"- [Chapter {ch['id']} {ch['title']}](#{anchor})")
+                    f"- [{_chapter_toc_label(ch['id'], ch['title'])}](#{anchor})")
             draft_lines.append('')
 
         # Chapters
@@ -1025,10 +1328,13 @@ class ReportTool(ToolBase):
             # evidence_index = self._load_evidence_index(paths)
             # notes_meta = evidence_index.get('notes', {})
 
-            cited_urls = set()
+            cited_urls = []
+            seen_urls = set()
             for ch in chapters_content:
                 for url in (ch.get('cited_urls') or []):
-                    cited_urls.add(url)
+                    if url not in seen_urls:
+                        cited_urls.append(url)
+                        seen_urls.add(url)
 
             all_cited = set()
             for ch in chapters_content:
@@ -1045,7 +1351,7 @@ class ReportTool(ToolBase):
 
                 ref_idx = 1
                 for url in cited_urls:
-                    draft_lines.append(f'{ref_idx}. {url}')
+                    draft_lines.append(f'[{ref_idx}] {url}')
                     ref_idx += 1
 
                 draft_lines.append('')
@@ -1085,6 +1391,44 @@ class ReportTool(ToolBase):
              'do not replace report content with references or pointers to other content or files '
              '(e.g., "details are in chapter_2.md", "see draft.md for more details").'
              ),
+        })
+
+    async def finalize_report(self, final_content: Optional[str] = None) -> str:
+        """Write the final report from supplied content or the assembled draft."""
+        paths = self._paths()
+
+        if final_content and final_content.strip():
+            report_content = _normalize_report_content(final_content)
+        else:
+            if not os.path.exists(paths['draft_md']):
+                draft_result = json.loads(await self.assemble_draft())
+                if draft_result.get('status') != 'ok':
+                    return _json_dumps(draft_result)
+            with open(paths['draft_md'], 'r', encoding='utf-8') as f:
+                report_content = _normalize_report_content(f.read())
+
+        if not report_content.strip():
+            return _json_dumps({
+                'status': 'error',
+                'message': 'Final report content is empty.',
+            })
+
+        invalid_refs = _invalid_local_report_references(report_content)
+        if invalid_refs:
+            return _json_dumps(
+                _format_validation_error(
+                    'Final report contains local evidence, analysis, or note placeholders. '
+                    'Rewrite the report with only numbered citations to public sources.',
+                    invalid_refs))
+
+        _write_text(paths['report_md'], report_content)
+        _write_text(paths['final_report_md'], report_content)
+
+        return _json_dumps({
+            'status': 'ok',
+            'report_path': os.path.relpath(paths['report_md'], self.output_dir),
+            'final_report_path': os.path.relpath(paths['final_report_md'], self.output_dir),
+            'content_length': len(report_content),
         })
 
     async def get_status(self) -> str:
@@ -1143,4 +1487,6 @@ class ReportTool(ToolBase):
             os.path.exists(paths['draft_md']),
             'report_exists':
             os.path.exists(paths['report_md']),
+            'final_report_exists':
+            os.path.exists(paths['final_report_md']),
         })

@@ -60,6 +60,22 @@ def _validate_source_tier(tier: str) -> str:
     return tier
 
 
+def _derive_note_title(tool_args: Dict[str, Any]) -> str:
+    for key in ('title', 'summary', 'content'):
+        value = str(tool_args.get(key) or '').strip()
+        if value:
+            first_line = value.splitlines()[0].strip()
+            compact = re.sub(r'\s+', ' ', first_line)
+            if compact:
+                return compact[:120]
+    tags = tool_args.get('tags') or []
+    if isinstance(tags, list):
+        cleaned = [str(tag or '').strip() for tag in tags if str(tag or '').strip()]
+        if cleaned:
+            return ', '.join(cleaned)[:120]
+    return 'Evidence Note'
+
+
 def _render_note_card(note: Dict[str, Any]) -> str:
     """
     Render a note card as Markdown.
@@ -735,7 +751,10 @@ class EvidenceTool(ToolBase):
 
     async def call_tool(self, server_name: str, *, tool_name: str,
                         tool_args: dict) -> str:
-        return await getattr(self, tool_name)(**(tool_args or {}))
+        normalized_args = dict(tool_args or {})
+        if tool_name == 'write_note' and not str(normalized_args.get('title') or '').strip():
+            normalized_args['title'] = _derive_note_title(normalized_args)
+        return await getattr(self, tool_name)(**normalized_args)
 
     def _load_index_locked(self, paths: Dict[str, str]) -> Dict[str, Any]:
         """Load index.json, creating empty structure if not exists."""
